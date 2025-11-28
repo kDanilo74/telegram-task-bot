@@ -175,9 +175,25 @@ Send proof here (TEXT ONLY)
         return bot.send_message(m.chat.id, f"{L['balance_btn']}: {bal}$")
 
     # ---- Referral ----
-    if text == L["ref_btn"]:
-        link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
-        return bot.send_message(m.chat.id, link)
+  if text == L["btn_ref"]:
+    uid = m.from_user.id
+    link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
+    
+    msgs = {
+        "en": f"🔗 Your referral link:\n{link}\n\n🎁 You earn 0.02$ for the first task completed by your referral.",
+        "ar": f"🔗 رابط الإحالة الخاص بك:\n{link}\n\n🎁 تربح 0.02$ عند تنفيذ أول مهمة من الشخص الذي دعوته.",
+        "ru": f"🔗 Ваша реферальная ссылка:\n{link}\n\n🎁 Вы получаете 0.02$ за первую выполненную задачу приглашённого пользователя.",
+        "es": f"🔗 Tu enlace de referido:\n{link}\n\n🎁 Ganas 0.02$ cuando tu referido completa su primera tarea.",
+        "de": f"🔗 Dein Einladungslink:\n{link}\n\n🎁 Du verdienst 0.02$, wenn dein geworbener Nutzer seine erste Aufgabe abschließt.",
+        "fr": f"🔗 Votre lien de parrainage :\n{link}\n\n🎁 Vous gagnez 0.02$ lorsque votre filleul réalise sa première tâche.",
+        "it": f"🔗 Il tuo link di referral:\n{link}\n\n🎁 Guadagni 0.02$ quando il tuo invitato completa il suo primo compito."
+    }
+
+    lang = get_lang(m.from_user)
+    msg = msgs.get(lang, msgs["en"])
+
+    return bot.send_message(m.chat.id, msg)
+
 
     # ---- Withdraw ----
     if text == L["withdraw_btn"]:
