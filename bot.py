@@ -9,9 +9,9 @@ from telebot import types
 
 # ---------------- CONFIG ----------------
 # Read sensitive values from environment (set these in Railway: BOT_TOKEN, ADMIN_ID, SUPPORT_USER)
-TOKEN = os.environ.get("BOT_TOKEN")
-ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
-SUPPORT_USER = os.environ.get("SUPPORT_USER", "")
+TOKEN = os.environ.get("8525745636:AAFOZoXtHl-1MxXkiBpm0AxiFEPBd4FcKsk")
+ADMIN_ID = int(os.environ.get("7152023720", "0"))
+SUPPORT_USER = os.environ.get("karemdanilo", "")
 
 
 if not TOKEN:
