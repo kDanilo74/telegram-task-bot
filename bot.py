@@ -115,9 +115,9 @@ LANG = {
 }
 
 # لو اللغة مش موجودة ناخد إنجليزي
-def get_lang(u):
-    code = (u.language_code or "en").split("-")[0]
-    return code if code in LANG else "en"
+def get_lang(user):
+    code = (getattr(user, "language_code", None) or "en").split("-")[0]
+    return code if code in ["ar","en","ru","es","de","fr","it"] else "en"
 
 def menu(user):
     L = LANG[get_lang(user)]
@@ -179,6 +179,8 @@ Send proof here (TEXT ONLY)
     uid = m.from_user.id
     link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
     
+    lang = get_lang(m.from_user)
+
     msgs = {
         "en": f"🔗 Your referral link:\n{link}\n\n🎁 You earn 0.02$ for the first task completed by your referral.",
         "ar": f"🔗 رابط الإحالة الخاص بك:\n{link}\n\n🎁 تربح 0.02$ عند تنفيذ أول مهمة من الشخص الذي دعوته.",
@@ -189,10 +191,10 @@ Send proof here (TEXT ONLY)
         "it": f"🔗 Il tuo link di referral:\n{link}\n\n🎁 Guadagni 0.02$ quando il tuo invitato completa il suo primo compito."
     }
 
-    lang = get_lang(m.from_user)
     msg = msgs.get(lang, msgs["en"])
+    bot.send_message(m.chat.id, msg)
+    return
 
-    return bot.send_message(m.chat.id, msg)
 
 
     # ---- Withdraw ----
