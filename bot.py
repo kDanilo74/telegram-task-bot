@@ -94,37 +94,15 @@ def sub_balance(uid, amount):
     users_db[uid]["balance"] = float(users_db[uid].get("balance", 0.0)) - float(amount)
     save_json(USERS_FILE, users_db)
 
-def register_referral(new_uid, ref_token):
-    try:
-        ref_id = str(ref_token)
-        if ref_id.startswith("ref"):
-            ref_id = ref_id[3:]
-        if str(new_uid) == ref_id:
-            return
-        ensure_user(new_uid)
-        if users_db[str(new_uid)].get("ref"):
-            return
-        users_db[str(new_uid)]["ref"] = ref_id
-        save_json(USERS_FILE, users_db)
-    except Exception as e:
-        logging.exception("register_referral error: %s", e)
-
-def handle_first_task_bonus(user_id):
-    uid = str(user_id)
-    rec = users_db.get(uid)
-    if not rec:
-        return
-    if rec.get("first_task_done"):
-        return
-    rec["first_task_done"] = True
-    save_json(USERS_FILE, users_db)
-    ref = rec.get("ref")
-    if ref:
-        try:
-            add_balance(ref, 0.02)
-            logging.info("Referrer %s rewarded 0.02 for user %s", ref, uid)
-        except Exception as e:
-            logging.exception("reward referrer error: %s", e)
+# REFERRAL
+if text == L.get("ref_btn", "🔗 Referral Link"):
+    referral_link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
+    msg = (
+        f"🔗 Your referral link:\n"
+        f"{referral_link}\n\n"
+        f"🎁 You earn 0.02$ for the first task from your referral"
+    )
+    return bot.send_message(m.chat.id, msg)
 
 # ------------- pending proofs (CSV) -------------
 def append_pending_proof(user_id, text):
@@ -325,57 +303,25 @@ def receive_wallet(m):
         logging.exception("withdraw request error: %s", e)
 
 # ---------------- Admin commands ----------------
-@bot.message_handler(commands=['accept'])
-def cmd_accept(m):
-    if m.from_user.id != ADMIN_ID:
+@bot.callback_query_handler(func=lambda call: call.data.startswith("accept_") or call.data.startswith("reject_"))
+def admin_review(call):
+    if call.from_user.id != ADMIN_ID:
         return
-    parts = m.text.split()
-    if len(parts) != 2:
-        return bot.reply_to(m, "Usage: /accept USERID")
-    target = parts[1]
-    try:
-        add_balance(target, 0.05)
-        handle_first_task_bonus(target)  # reward ref 0.02 if applicable and not given before
-        bot.send_message(int(target), "✔ Your task was accepted. +0.05$")
-        bot.reply_to(m, "Accepted and user notified.")
-    except Exception as e:
-        logging.exception("accept error: %s", e)
-        bot.reply_to(m, "Error processing accept.")
 
-@bot.message_handler(commands=['reject'])
-def cmd_reject(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    parts = m.text.split()
-    if len(parts) != 2:
-        return bot.reply_to(m, "Usage: /reject USERID")
-    target = parts[1]
-    try:
-        bot.send_message(int(target), "❌ Your task was rejected.")
-        bot.reply_to(m, "Rejected.")
-    except Exception as e:
-        logging.exception("reject error: %s", e)
-        bot.reply_to(m, "Error processing reject.")
+    uid = call.data.split("_")[1]
 
-@bot.message_handler(commands=['paid'])
-def cmd_paid(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    parts = m.text.split()
-    if len(parts) != 3:
-        return bot.reply_to(m, "Usage: /paid USERID AMOUNT")
-    target = parts[1]
-    try:
-        amount = float(parts[2])
-    except:
-        return bot.reply_to(m, "Amount must be a number")
-    try:
-        sub_balance(target, amount)
-        bot.send_message(int(target), LANG.get("en").get("paid_msg"))
-        bot.reply_to(m, "Paid and user notified.")
-    except Exception as e:
-        logging.exception("paid error: %s", e)
-        bot.reply_to(m, "Error processing payment.")
+    if call.data.startswith("accept_"):
+        # قبول المهمة
+        add_balance(uid, 0.05)
+        handle_first_task_bonus(uid)
+
+        bot.send_message(int(uid), "✔ تم قبول المهمة.\nتم إضافة +0.05$ إلى رصيدك.")
+        bot.answer_callback_query(call.id, "تم القبول")
+    
+    else:
+        # رفض المهمة
+        bot.send_message(int(uid), "❌ تم رفض المهمة.\nبرجاء تنفيذ المهمة مرة أخرى.")
+        bot.answer_callback_query(call.id, "تم الرفض")
 
 # ----------------- start -----------------
 if __name__ == "__main__":
