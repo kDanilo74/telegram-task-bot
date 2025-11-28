@@ -1,258 +1,248 @@
-
 import os
 import csv
 import json
-import logging
-from pathlib import Path
 import telebot
 from telebot import types
+from pathlib import Path
 
-# ---------------- CONFIG ----------------
-# Read sensitive values from environment (set these in Railway: BOT_TOKEN, ADMIN_ID, SUPPORT_USER)
+# ---------------- ENV ----------------
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 SUPPORT_USER = os.environ.get("SUPPORT_USER", "")
 
-
 if not TOKEN:
-    raise RuntimeError("BOT_TOKEN environment variable missing!")
+    raise RuntimeError("BOT_TOKEN missing!")
 
-bot = telebot.TeleBot(TOKEN, threaded=True)
+bot = telebot.TeleBot(TOKEN, threaded=False)
 
 BASE = Path(__file__).parent
-ACCOUNTS_FILE = BASE / "accounts.csv"       # CSV with header: first,last,email,password
-PENDING_FILE = BASE / "pending_tasks.csv"   # pending proofs
-USERS_FILE = BASE / "users.json"            # stores balances and refs
+ACCOUNTS_FILE = BASE / "accounts.csv"
+PENDING_FILE = BASE / "pending_tasks.csv"
+USERS_FILE = BASE / "users.json"
 
-# --------------- logging ------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(message)s"
-)
-
-# ------------- helpers (JSON) --------------
-def load_json(path):
-    if not path.exists():
+# ---------- Load DB ----------
+def load_json(p):
+    if not p.exists():
         return {}
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except:
-        return {}
+    return json.loads(p.read_text(encoding="utf-8"))
 
-def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+def save_json(p, data):
+    p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-users_db = load_json(USERS_FILE)
+users = load_json(USERS_FILE)
 
-# ------------- accounts CSV helpers -------------
-def read_accounts():
-    if not ACCOUNTS_FILE.exists():
-        return []
-    rows = []
-    with ACCOUNTS_FILE.open(newline='', encoding='utf-8') as f:
-        r = csv.reader(f)
-        allrows = list(r)
-        if not allrows:
-            return []
-        firstrow = allrows[0]
-        if any(h.lower().startswith(k) for k in ["first", "email", "last"] for h in firstrow):
-            allrows = allrows[1:]
-        for row in allrows:
-            if len(row) >= 4:
-                rows.append({
-                    "first": row[0].strip(),
-                    "last": row[1].strip(),
-                    "email": row[2].strip(),
-                    "password": row[3].strip()
-                })
-    return rows
-
-def pop_account():
-    accounts = read_accounts()
-    if not accounts:
-        return None
-    acc = accounts.pop(0)
-    with ACCOUNTS_FILE.open("w", newline='', encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["first","last","email","password"])
-        for a in accounts:
-            w.writerow([a["first"], a["last"], a["email"], a["password"]])
-    return acc
-
-# ------------- referral & balance -------------
 def ensure_user(uid):
     uid = str(uid)
-    if uid not in users_db:
-        users_db[uid] = {"balance": 0.0, "ref": None, "first_task_done": False}
-        save_json(USERS_FILE, users_db)
+    if uid not in users:
+        users[uid] = {"balance":0, "ref":None}
+        save_json(USERS_FILE, users)
 
 def add_balance(uid, amount):
     uid = str(uid)
     ensure_user(uid)
-    users_db[uid]["balance"] = float(users_db[uid]["balance"]) + float(amount)
-    save_json(USERS_FILE, users_db)
+    users[uid]["balance"] += amount
+    save_json(USERS_FILE, users)
 
-def sub_balance(uid, amount):
-    uid = str(uid)
-    ensure_user(uid)
-    users_db[uid]["balance"] = float(users_db[uid]["balance"]) - float(amount)
-    save_json(USERS_FILE, users_db)
+# ---------- Accounts ----------
+def read_accounts():
+    if not ACCOUNTS_FILE.exists(): 
+        return []
+    rows=[]
+    with open(ACCOUNTS_FILE, newline='', encoding="utf-8") as f:
+        r = list(csv.reader(f))
+    if not r:
+        return []
+    if r[0][0].lower()=="first":
+        r = r[1:]
+    for row in r:
+        if len(row)>=4:
+            rows.append({
+                "first":row[0],
+                "last":row[1],
+                "email":row[2],
+                "password":row[3]
+            })
+    return rows
 
-def register_referral(new_uid, ref_token):
-    try:
-        ref_id = ref_token.replace("ref", "")
-        if str(new_uid) == ref_id:
-            return
-        ensure_user(new_uid)
-        if users_db[str(new_uid)]["ref"]:
-            return
-        users_db[str(new_uid)]["ref"] = ref_id
-        save_json(USERS_FILE, users_db)
-    except:
-        pass
+def pop_account():
+    accs = read_accounts()
+    if not accs:
+        return None
+    first = accs.pop(0)
+    with open(ACCOUNTS_FILE,"w",newline='',encoding="utf-8") as f:
+        w=csv.writer(f)
+        w.writerow(["first","last","email","password"])
+        for a in accs:
+            w.writerow([a["first"],a["last"],a["email"],a["password"]])
+    return first
 
-def reward_referrer(user_id):
-    user_id = str(user_id)
-    u = users_db.get(user_id, {})
-    if not u.get("first_task_done"):
-        u["first_task_done"] = True
-        save_json(USERS_FILE, users_db)
-        if u.get("ref"):
-            ref = u["ref"]
-            add_balance(ref, 0.02)
+def save_pending(uid, acc):
+    with open(PENDING_FILE,"a",newline='',encoding="utf-8") as f:
+        w=csv.writer(f)
+        w.writerow([uid, acc["first"], acc["last"], acc["email"], acc["password"]])
 
-# ------------- pending proofs (CSV) -------------
-def append_pending(user_id, account):
-    with PENDING_FILE.open("a", newline='', encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow([str(user_id), account["first"], account["last"], account["email"], account["password"]])
-
-# ------------- LANGUAGE SYSTEM -------------
+# ---------------- Multi-Language ----------------
 LANG = {
     "ar": {
-        "start": "أهلا! اختر من القائمة:",
-        "btn_task": "📝 تنفيذ مهمة",
-        "btn_balance": "💰 رصيدي",
-        "btn_ref": "🔗 رابط الإحالة",
-        "btn_support": "🆘 دعم",
-        "task_msg": "مهمتك:\n1) افتح الرابط: {url}\n2) نفّذ المطلوب\n3) أرسل الإثبات هنا.",
-        "no_task": "لا توجد مهام الآن.",
-        "sent_task": "تم إرسال بيانات الحساب إليك.",
-        "support_text": "للتواصل مع الدعم: @{admin}",
-        "paid_notif": "✅ تم إرسال {amount}$ إليك."
+        "start":"أهلاً! اختر من القائمة:",
+        "task_btn":"📝 تنفيذ مهمة",
+        "balance_btn":"💰 رصيدي",
+        "ref_btn":"🔗 رابط الإحالة",
+        "withdraw_btn":"💵 سحب",
+        "support_btn":"🆘 دعم",
+        "no_task":"لا توجد مهام الآن.",
+        "task_sent":"تم إرسال حساب للعمل. أرسل الإثبات نصياً فقط.",
+        "send_wallet":"أرسل عنوان محفظة USDT TRC20:",
+        "min_withdraw":"الحد الأدنى للسحب 1$",
+        "withdraw_sent":"تم إرسال طلب السحب للإدارة ✔",
+        "paid_msg":"تم إرسال المال إلى محفظتك ✔"
     },
-    "en": {
-        "start": "Welcome! Choose from the menu:",
-        "btn_task": "📝 Do Task",
-        "btn_balance": "💰 My Balance",
-        "btn_ref": "🔗 Referral Link",
-        "btn_support": "🆘 Support",
-        "task_msg": "Your task:\n1) Open: {url}\n2) Complete it\n3) Send proof here.",
-        "no_task": "No tasks available.",
-        "sent_task": "Your account details were sent.",
-        "support_text": "Support: @{admin}",
-        "paid_notif": "✅ {amount}$ sent to you."
-    }
+    "en":{
+        "start":"Welcome! Choose from menu:",
+        "task_btn":"📝 Task",
+        "balance_btn":"💰 Balance",
+        "ref_btn":"🔗 Referral Link",
+        "withdraw_btn":"💵 Withdraw",
+        "support_btn":"🆘 Support",
+        "no_task":"No tasks available.",
+        "task_sent":"Your task account was sent. Send proof as TEXT only.",
+        "send_wallet":"Send your USDT TRC20 wallet:",
+        "min_withdraw":"Minimum withdrawal is 1$",
+        "withdraw_sent":"Withdrawal request sent to admin ✔",
+        "paid_msg":"Funds sent to your wallet ✔"
+    },
+    "ru":{}, "es":{}, "fr":{}, "de":{}, "it":{}
 }
 
-def user_lang(user):
-    code = (getattr(user, "language_code", "en") or "en").split("-")[0]
+# لو اللغة مش موجودة ناخد إنجليزي
+def get_lang(u):
+    code = (u.language_code or "en").split("-")[0]
     return code if code in LANG else "en"
 
-# -------------- keyboards ----------------
-def main_menu(user):
-    L = LANG[user_lang(user)]
+def menu(user):
+    L = LANG[get_lang(user)]
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(L["btn_task"])
-    kb.row(L["btn_balance"], L["btn_ref"])
-    kb.row(L["btn_support"])
+    kb.row(L["task_btn"])
+    kb.row(L["balance_btn"], L["ref_btn"])
+    kb.row(L["withdraw_btn"])
+    kb.row(L["support_btn"])
     return kb
 
-# ---------------- handlers ----------------
+# --------------- Start ----------------
 @bot.message_handler(commands=['start'])
-def start(m):
-    uid = m.from_user.id
+def start(msg):
+    uid = msg.from_user.id
     ensure_user(uid)
-    parts = m.text.split()
-    if len(parts) > 1:
-        register_referral(uid, parts[1])
-    L = LANG[user_lang(m.from_user)]
-    ref = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
-    msg = f"{L['start']}\n\n{L['btn_ref']}: {ref}\n(You earn $0.02 from first task)"
-    bot.send_message(m.chat.id, msg, reply_markup=main_menu(m.from_user))
 
+    L = LANG[get_lang(msg.from_user)]
+    bot.send_message(msg.chat.id, L["start"], reply_markup=menu(msg.from_user))
+
+# ---------------- Text Handler ----------------
 @bot.message_handler(func=lambda m: True)
 def handler(m):
     uid = m.from_user.id
     ensure_user(uid)
-    L = LANG[user_lang(m.from_user)]
+    L = LANG[get_lang(m.from_user)]
     text = m.text.strip()
 
-    # Task
-    if text == L["btn_task"]:
+    # ---- Task ----
+    if text == L["task_btn"]:
         acc = pop_account()
         if not acc:
-            bot.send_message(m.chat.id, L["no_task"])
-            return
-        append_pending(uid, acc)
-        info = (
-            f"First: {acc['first']}\n"
-            f"Last: {acc['last']}\n"
-            f"Email: {acc['email']}\n"
-            f"Password: {acc['password']}\n\n"
-            f"{L['task_msg'].format(url='https://example.com')}"
-        )
-        bot.send_message(m.chat.id, info)
-        return
+            return bot.send_message(m.chat.id, L["no_task"])
 
-    # Balance
-    if text == L["btn_balance"]:
-        bal = users_db.get(str(uid), {}).get("balance", 0.0)
-        bot.send_message(m.chat.id, f"{bal}$")
-        return
+        msg_task = f"""
+Your task:
 
-    # Referral
-    if text == L["btn_ref"]:
+First: {acc['first']}
+Last: {acc['last']}
+Email: {acc['email']}
+Password: {acc['password']}
+
+Open:
+(https://shorturl.at/omjU5)
+
+Complete the task
+Send proof here (TEXT ONLY)
+"""
+
+        save_pending(uid, acc)
+        return bot.send_message(m.chat.id, msg_task)
+
+    # ---- Balance ----
+    if text == L["balance_btn"]:
+        bal = users[str(uid)]["balance"]
+        return bot.send_message(m.chat.id, f"{L['balance_btn']}: {bal}$")
+
+    # ---- Referral ----
+    if text == L["ref_btn"]:
         link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
-        bot.send_message(m.chat.id, link)
+        return bot.send_message(m.chat.id, link)
+
+    # ---- Withdraw ----
+    if text == L["withdraw_btn"]:
+        bal = users[str(uid)]["balance"]
+        if bal < 1:
+            return bot.send_message(m.chat.id, L["min_withdraw"])
+        bot.send_message(m.chat.id, L["send_wallet"])
+        bot.register_next_step_handler(m, receive_wallet)
         return
 
-    # Support
-    if text == L["btn_support"]:
-        bot.send_message(m.chat.id, L["support_text"].format(admin=SUPPORT_USER))
-        return
+    # ---- Support ----
+    if text == L["support_btn"]:
+        return bot.send_message(m.chat.id, f"Contact: @{SUPPORT_USER}")
 
-    bot.send_message(m.chat.id, "Use the menu or /start")
+    # ---- Proof Handling ----
+    if uid != ADMIN_ID:   # مستخدم عادي
+        bot.send_message(
+            ADMIN_ID,
+            f"New proof from user {uid}:\n\n{text}"
+        )
+        return bot.send_message(m.chat.id, "Proof received. Waiting admin review ✔")
 
-# -------------------- admin -----------------------
-@bot.message_handler(commands=['pay'])
-def pay(m):
-    if m.from_user.id != ADMIN_ID:
-        return
-    parts = m.text.split()
-    if len(parts) != 3:
-        bot.reply_to(m, "Usage: /pay USER AMOUNT")
-        return
-    uid = parts[1]
-    amount = float(parts[2])
-    sub_balance(uid, amount)
-    bot.send_message(int(uid), LANG["en"]["paid_notif"].format(amount=amount))
-    bot.reply_to(m, "Sent.")
+    # ADMIN receives normal messages silently
 
+
+def receive_wallet(m):
+    uid = m.from_user.id
+    wallet = m.text.strip()
+    L = LANG[get_lang(m.from_user)]
+
+    bot.send_message(
+        ADMIN_ID,
+        f"Withdrawal request:\nUser: {uid}\nBalance: {users[str(uid)]['balance']}\nWallet: {wallet}"
+    )
+
+    bot.send_message(m.chat.id, L["withdraw_sent"])
+
+# ----------- Admin Commands ----------
 @bot.message_handler(commands=['accept'])
-def accept_task(m):
-    if m.from_user.id != ADMIN_ID:
-        return
+def accept(m):
+    if m.from_user.id != ADMIN_ID: return
     parts = m.text.split()
-    if len(parts) != 2:
-        bot.reply_to(m, "Usage: /accept USERID")
-        return
+    if len(parts)!=2: return
     uid = parts[1]
     add_balance(uid, 0.05)
-    reward_referrer(uid)
-    bot.send_message(int(uid), "Task accepted +0.05$")
-    bot.reply_to(m, "OK.")
+    bot.send_message(int(uid),"Task accepted ✔ +0.05$")
+    bot.reply_to(m,"Accepted ✔")
 
-# ----------------- run -----------------
-if __name__ == "__main__":
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+@bot.message_handler(commands=['reject'])
+def reject(m):
+    if m.from_user.id != ADMIN_ID: return
+    parts = m.text.split()
+    if len(parts)!=2: return
+    uid = parts[1]
+    bot.send_message(int(uid),"Task rejected ❌")
+    bot.reply_to(m,"Rejected ❌")
+
+@bot.message_handler(commands=['paid'])
+def paid(m):
+    if m.from_user.id != ADMIN_ID: return
+    parts = m.text.split()
+    if len(parts)!=3: return
+    uid = parts[1]
+    bot.send_message(int(uid),"Funds sent ✔")
+    bot.reply_to(m,"Done ✔")
+
+# ---------- Run ----------
+bot.infinity_polling()
