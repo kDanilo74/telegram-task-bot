@@ -1,13 +1,12 @@
-# bot.py — final consolidated version
+# bot.py
 import os
 import csv
 import json
-import logging
 from pathlib import Path
 import telebot
 from telebot import types
 
-# ---------------- ENV / CONFIG ----------------
+# ---------------- CONFIG ----------------
 TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "0"))
 SUPPORT_USER = os.environ.get("SUPPORT_USER", "")  # without @
@@ -23,307 +22,257 @@ PENDING_FILE = BASE / "pending_tasks.csv"   # stores pending task proofs (uid, t
 USERS_FILE = BASE / "users.json"            # stores balances, refs, first_task_done
 LOG_FILE = BASE / "bot.log"
 
-# --------------- logging ------------------
-logging.basicConfig(
-    filename=str(LOG_FILE),
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s"
-)
-
-# ------------- helpers (JSON) --------------
-def load_json(path):
-    if not path.exists():
-        return {}
+# ------------- load/save users -------------
+def load_json(file):
+    if not file.exists(): return {}
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+        return json.loads(file.read_text(encoding="utf-8"))
+    except:
         return {}
 
-def save_json(path, data):
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+def save_json(file, data):
+    file.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
 
-users_db = load_json(USERS_FILE)  # { user_id: {"balance": float, "ref": ref_id_or_none, "first_task_done": bool} }
+users = load_json(USERS_FILE)
 
-# ------------- accounts CSV helpers -------------
+def ensure_user(uid):
+    uid = str(uid)
+    if uid not in users:
+        users[uid] = {"balance": 0.0, "ref": None, "first_task": False}
+        save_json(USERS_FILE, users)
+
+def add_balance(uid, amount):
+    uid=str(uid)
+    ensure_user(uid)
+    users[uid]["balance"] += float(amount)
+    save_json(USERS_FILE, users)
+
+# ---------------- READ ACCOUNTS --------------
 def read_accounts():
-    if not ACCOUNTS_FILE.exists():
-        return []
-    rows = []
-    with ACCOUNTS_FILE.open(newline='', encoding='utf-8') as f:
-        r = list(csv.reader(f))
-    if not r:
-        return []
-    # detect header
-    firstrow = r[0]
-    if any(cell.lower().startswith(k) for cell in firstrow for k in ("first","last","email","password")):
-        r = r[1:]
-    for row in r:
-        if len(row) >= 4:
-            rows.append({"first": row[0].strip(), "last": row[1].strip(), "email": row[2].strip(), "password": row[3].strip()})
+    if not ACCOUNTS_FILE.exists(): return []
+    rows=[]
+    with ACCOUNTS_FILE.open(encoding="utf-8") as f:
+        r=csv.reader(f)
+        for a in r:
+            if len(a)>=4:
+                rows.append({"first":a[0],"last":a[1],"email":a[2],"password":a[3]})
     return rows
 
 def pop_account():
-    accounts = read_accounts()
-    if not accounts:
-        return None
-    acc = accounts.pop(0)
-    # write back remaining with header
-    with ACCOUNTS_FILE.open("w", newline='', encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow(["first","last","email","password"])
+    accounts=read_accounts()
+    if not accounts: return None
+    acc=accounts.pop(0)
+    with ACCOUNTS_FILE.open("w",encoding="utf-8",newline="") as f:
+        w=csv.writer(f)
         for a in accounts:
-            w.writerow([a["first"], a["last"], a["email"], a["password"]])
+            w.writerow([a["first"],a["last"],a["email"],a["password"]])
     return acc
 
-# ------------- referral & balance -------------
-def ensure_user(uid):
-    uid = str(uid)
-    if uid not in users_db:
-        users_db[uid] = {"balance": 0.0, "ref": None, "first_task_done": False}
-        save_json(USERS_FILE, users_db)
+def append_pending(uid,acc,proof):
+    with PENDING_FILE.open("a",encoding="utf-8",newline="") as f:
+        w=csv.writer(f)
+        w.writerow([uid,acc["first"],acc["last"],acc["email"],acc["password"],proof])
 
-def add_balance(uid, amount):
-    uid = str(uid)
-    ensure_user(uid)
-    users_db[uid]["balance"] = float(users_db[uid].get("balance", 0.0)) + float(amount)
-    save_json(USERS_FILE, users_db)
+# ---------------- MULTI LANGUAGE ----------------
 
-def sub_balance(uid, amount):
-    uid = str(uid)
-    ensure_user(uid)
-    users_db[uid]["balance"] = float(users_db[uid].get("balance", 0.0)) - float(amount)
-    save_json(USERS_FILE, users_db)
-
-# REFERRAL
-if text == L.get("ref_btn", "🔗 Referral Link"):
-    referral_link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
-    msg = (
-        f"🔗 Your referral link:\n"
-        f"{referral_link}\n\n"
-        f"🎁 You earn 0.02$ for the first task from your referral"
-    )
-    return bot.send_message(m.chat.id, msg)
-
-# ------------- pending proofs (CSV) -------------
-def append_pending_proof(user_id, text):
-    # store uid and proof text (for admin review)
-    with PENDING_FILE.open("a", newline='', encoding="utf-8") as f:
-        w = csv.writer(f)
-        w.writerow([str(user_id), text])
-
-# ------------- LANGUAGE system -------------
 LANG = {
     "ar": {
         "start": "أهلاً! اختر من القائمة:",
-        "task_btn": "📝 تنفيذ مهمة",
-        "balance_btn": "💰 رصيدي",
-        "ref_btn": "🔗 رابط الإحالة",
-        "withdraw_btn": "💵 سحب",
-        "support_btn": "🆘 دعم",
+        "btn_task": "📝 المهام",
+        "btn_balance": "💰 الرصيد",
+        "btn_ref": "🔗 رابط الإحالة",
+        "btn_support": "🆘 الدعم",
+        "task_sent": "تم إرسال بيانات المهمة:",
+        "send_proof": "\n⚠️ بعد التنفيذ أرسل رسالة نصية تؤكد إتمام المهمة.",
         "no_task": "لا توجد مهام متاحة الآن.",
-        "task_sent": "تم إرسال بيانات الحساب. أرسل الإثبات نصاً فقط.",
-        "proof_received_user": "تم استلام الإثبات. في انتظار مراجعة الإدارة.",
-        "admin_new_proof": "وصل إثبات جديد من المستخدم",
-        "send_wallet": "أرسل عنوان محفظة USDT (TRC20):",
-        "min_withdraw": "الحد الأدنى للسحب هو 1$.",
-        "withdraw_sent": "تم إرسال طلب السحب للإدارة.",
-        "paid_msg": "✅ تم إرسال المبلغ إلى محفظتك."
+        "ref_msg": "🔗 رابط الإحالة:\n{link}\n\n🎁 تحصل على 0.02$ عند تنفيذ الإحالة أول مهمة فقط.",
+        "support_text": "للتواصل مع الدعم: @{admin}"
     },
     "en": {
-        "start": "Welcome! Choose from the menu:",
-        "task_btn": "📝 Task",
-        "balance_btn": "💰 Balance",
-        "ref_btn": "🔗 Referral Link",
-        "withdraw_btn": "💵 Withdraw",
-        "support_btn": "🆘 Support",
+        "start": "Welcome! Choose from menu:",
+        "btn_task": "📝 Tasks",
+        "btn_balance": "💰 Balance",
+        "btn_ref": "🔗 Referral Link",
+        "btn_support": "🆘 Support",
+        "task_sent": "Task data sent:",
+        "send_proof": "\n⚠️ After finishing, send a text message as proof.",
         "no_task": "No tasks available now.",
-        "task_sent": "Your account was sent. Send proof as TEXT only.",
-        "proof_received_user": "Proof received. Waiting for admin review.",
-        "admin_new_proof": "New proof received from user",
-        "send_wallet": "Send your USDT (TRC20) wallet address:",
-        "min_withdraw": "Minimum withdrawal is 1$.",
-        "withdraw_sent": "Withdrawal request sent to admin.",
-        "paid_msg": "✅ Funds have been sent to your wallet."
-    },
-    "ru": {
-        "ref_msg": "🔗 Ваша реферальная ссылка:",
-        "ref_bonus": "🎁 Вы получаете 0.02$ за первую задачу приглашённого."
+        "ref_msg": "🔗 Your referral link:\n{link}\n\n🎁 You earn $0.02 when your referral completes the first task.",
+        "support_text": "Contact support: @{admin}"
     },
     "es": {
-        "ref_msg": "🔗 Tu enlace de referido:",
-        "ref_bonus": "🎁 Ganas 0.02$ cuando tu referido completa su primera tarea."
-    },
-    "de": {
-        "ref_msg": "🔗 Dein Einladungslink:",
-        "ref_bonus": "🎁 Du verdienst 0.02$, wenn dein Geworbener seine erste Aufgabe abschließt."
+        "start": "¡Hola! Elige del menú:",
+        "btn_task": "📝 Tareas",
+        "btn_balance": "💰 Saldo",
+        "btn_ref": "🔗 Enlace de referido",
+        "btn_support": "🆘 Soporte",
+        "task_sent": "Datos de la tarea enviados:",
+        "send_proof": "\n⚠️ Después de terminar, envía un mensaje de texto como prueba.",
+        "no_task": "No hay tareas disponibles.",
+        "ref_msg": "🔗 Enlace de referido:\n{link}\n\n🎁 Ganas $0.02 cuando tu referido completa su primera tarea.",
+        "support_text": "Soporte: @{admin}"
     },
     "fr": {
-        "ref_msg": "🔗 Votre lien de parrainage :",
-        "ref_bonus": "🎁 Vous gagnez 0.02$ lorsque votre filleul réalise sa première tâche."
+        "start": "Bienvenue ! Choisissez dans le menu :",
+        "btn_task": "📝 Tâches",
+        "btn_balance": "💰 Solde",
+        "btn_ref": "🔗 Lien de parrainage",
+        "btn_support": "🆘 Support",
+        "task_sent": "Données de tâche envoyées :",
+        "send_proof": "\n⚠️ Après avoir terminé, envoyez un message texte comme preuve.",
+        "no_task": "Aucune tâche disponible.",
+        "ref_msg": "🔗 Votre lien de parrainage :\n{link}\n\n🎁 Vous gagnez 0.02$ lorsque votre filleul termine sa première tâche.",
+        "support_text": "Support : @{admin}"
+    },
+    "de": {
+        "start": "Willkommen! Wähle aus dem Menü:",
+        "btn_task": "📝 Aufgaben",
+        "btn_balance": "💰 Guthaben",
+        "btn_ref": "🔗 Empfehlungslink",
+        "btn_support": "🆘 Support",
+        "task_sent": "Aufgabendaten gesendet:",
+        "send_proof": "\n⚠️ Nach Abschluss sende eine Textnachricht als Nachweis.",
+        "no_task": "Keine Aufgaben verfügbar.",
+        "ref_msg": "🔗 Dein Empfehlungslink:\n{link}\n\n🎁 Du verdienst 0,02$, wenn dein Referral die erste Aufgabe erledigt.",
+        "support_text": "Support: @{admin}"
     },
     "it": {
-        "ref_msg": "🔗 Il tuo link di referral:",
-        "ref_bonus": "🎁 Guadagni 0.02$ quando il tuo invitato completa il suo primo compito."
+        "start": "Benvenuto! Scegli dal menu:",
+        "btn_task": "📝 Compiti",
+        "btn_balance": "💰 Saldo",
+        "btn_ref": "🔗 Link di riferimento",
+        "btn_support": "🆘 Supporto",
+        "task_sent": "Dati della missione inviati:",
+        "send_proof": "\n⚠️ Dopo aver finito, invia un messaggio di testo come prova.",
+        "no_task": "Nessuna missione disponibile.",
+        "ref_msg": "🔗 Il tuo link referral:\n{link}\n\n🎁 Guadagni 0.02$ quando il referral completa la prima missione.",
+        "support_text": "Supporto: @{admin}"
+    },
+    "ru": {
+        "start": "Добро пожаловать! Выберите из меню:",
+        "btn_task": "📝 Задания",
+        "btn_balance": "💰 Баланс",
+        "btn_ref": "🔗 Реферальная ссылка",
+        "btn_support": "🆘 Поддержка",
+        "task_sent": "Данные задания отправлены:",
+        "send_proof": "\n⚠️ После выполнения отправьте текстовое сообщение как подтверждение.",
+        "no_task": "Нет доступных заданий.",
+        "ref_msg": "🔗 Ваша реферальная ссылка:\n{link}\n\n🎁 Вы получаете 0.02$, когда реферал выполнит первое задание.",
+        "support_text": "Поддержка: @{admin}"
     }
 }
 
-def get_lang(user):
-    code = (getattr(user, "language_code", None) or "en").split("-")[0]
-    return code if code in ("ar","en","ru","es","de","fr","it") else "en"
+def user_lang(m):
+    code = (m.from_user.language_code or "en")[:2]
+    return code if code in LANG else "en"
 
+# -------------------- Keyboards --------------------
 def menu(user):
-    lang = get_lang(user)
-    L = LANG.get(lang, LANG["en"])
-    # fallback labels for languages that don't define full dict
-    if lang in ("ru","es","de","fr","it"):
-        # use English buttons labels but translated ref text will use LANG[lang]
-        labels = {
-            "task_btn": "📝 Task",
-            "balance_btn": "💰 Balance",
-            "ref_btn": "🔗 Referral Link",
-            "withdraw_btn": "💵 Withdraw",
-            "support_btn": "🆘 Support"
-        }
-    else:
-        labels = L
+    L = LANG[user_lang(user)]
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
-    kb.row(labels["task_btn"])
-    kb.row(labels["balance_btn"], labels["ref_btn"])
-    kb.row(labels["withdraw_btn"])
-    kb.row(labels["support_btn"])
+    kb.row(L["btn_task"])
+    kb.row(L["btn_balance"], L["btn_ref"])
+    kb.row(L["btn_support"])
     return kb
 
-# ---------------- Handlers -----------------
+# -------------------- Handlers ---------------------
+
 @bot.message_handler(commands=['start'])
-def start_handler(m):
-    uid = m.from_user.id
-    ensure_user(uid)
-    # check referral code in /start
-    parts = m.text.split()
-    if len(parts) > 1:
-        register_referral(uid, parts[1])
-    lang = get_lang(m.from_user)
-    L = LANG.get(lang, LANG["en"])
-    referral_link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
-    # Compose referral message per language
-    if lang == "ar":
-        ref_msg = f"🔗 رابط الإحالة الخاص بك:\n{referral_link}\n\n🎁 تربح 0.02$ عند تنفيذ أول مهمة من الشخص الذي دعوته."
-        start_text = L["start"]
-    elif lang == "en":
-        ref_msg = f"🔗 Your referral link:\n{referral_link}\n\n🎁 You earn 0.02$ for the first task completed by your referral."
-        start_text = L["start"]
-    else:
-        # languages with limited keys
-        ref_msg = f"{LANG.get(lang).get('ref_msg')}\n{referral_link}\n\n{LANG.get(lang).get('ref_bonus')}"
-        start_text = LANG["en"]["start"]
-    bot.send_message(m.chat.id, f"{start_text}\n\n{ref_msg}", reply_markup=menu(m.from_user))
+def start(m):
+    ensure_user(m.from_user.id)
+    L = LANG[user_lang(m.from_user)]
+
+    ref_link = f"https://t.me/{bot.get_me().username}?start={m.from_user.id}"
+
+    bot.send_message(
+        m.chat.id,
+        L["start"],
+        reply_markup=menu(m.from_user)
+    )
 
 @bot.message_handler(func=lambda m: True)
-def generic_handler(m):
-    text = (m.text or "").strip()
+def main_handler(m):
     uid = m.from_user.id
     ensure_user(uid)
-    lang = get_lang(m.from_user)
-    L = LANG.get(lang, LANG["en"])
+    L = LANG[user_lang(m.from_user)]
+    txt = m.text
 
-    # TASK
-    if text == L.get("task_btn", "📝 Task"):
+    # ---------- طلب مهمة ----------
+    if txt == L["btn_task"]:
         acc = pop_account()
         if not acc:
-            return bot.send_message(m.chat.id, L.get("no_task"))
-        msg_task = (
-f"Your task:\n\n"
-f"First: {acc['first']}\n"
-f"Last: {acc['last']}\n"
-f"Email: {acc['email']}\n"
-f"Password: {acc['password']}\n\n"
-f"Open:\n"  https://shorturl.at/UV7OC
-f"Complete the task\n"
-f"Send proof here (TEXT ONLY)\n"
+            bot.send_message(m.chat.id, L["no_task"])
+            return
+
+        mission = (
+            f"🔷 **بيانات المهمة:**\n"
+            f"الاسم: {acc['first']} {acc['last']}\n"
+            f"الإيميل: {acc['email']}\n"
+            f"كلمة المرور: {acc['password']}\n"
+            f"رابط المهمة: {TASK_URL}\n"
+            f"{L['send_proof']}"
         )
-        append_pending_proof(uid, f"SENT_TASK_FOR:{acc['email']}")  # log assignment
-        bot.send_message(m.chat.id, msg_task)
+
+        bot.send_message(m.chat.id, mission, parse_mode="Markdown")
+        users[str(uid)]["pending"] = acc
+        save_json(USERS_FILE, users)
         return
 
-    # BALANCE
-    if text == L.get("balance_btn", "💰 Balance"):
-        bal = users_db.get(str(uid), {}).get("balance", 0.0)
-        return bot.send_message(m.chat.id, f"{L.get('balance_btn','Balance')}: {bal}$")
-
-    # REFERRAL
-    if text == L.get("ref_btn", "🔗 Referral Link"):
-        referral_link = f"https://t.me/{bot.get_me().username}?start=ref{uid}"
-        if lang == "ar":
-            msg = f"🔗 رابط الإحالة الخاص بك:\n{referral_link}\n\n🎁 تربح 0.02$ عند تنفيذ أول مهمة من الشخص الذي دعوته."
-        elif lang == "en":
-            msg = f"🔗 Your referral link:\n{referral_link}\n\n🎁 You earn 0.02$ for the first task completed by your referral."
-        else:
-            msg = f"{LANG.get(lang).get('ref_msg')}\n{referral_link}\n\n{LANG.get(lang).get('ref_bonus')}"
-        return bot.send_message(m.chat.id, msg)
-
-    # WITHDRAW
-    if text == L.get("withdraw_btn", "💵 Withdraw"):
-        bal = users_db.get(str(uid), {}).get("balance", 0.0)
-        if bal < 1:
-            return bot.send_message(m.chat.id, L.get("min_withdraw", "Minimum withdrawal is 1$."))
-        bot.send_message(m.chat.id, L.get("send_wallet", "Send your USDT (TRC20) wallet address:"))
-        bot.register_next_step_handler(m, receive_wallet)
+    # ---------- الرصيد ----------
+    if txt == L["btn_balance"]:
+        balance = users[str(uid)]["balance"]
+        bot.send_message(m.chat.id, f"💰 {balance}$")
         return
 
-    # SUPPORT
-    if text == L.get("support_btn", "🆘 Support"):
-        sup = SUPPORT_USER if SUPPORT_USER else "support"
-        return bot.send_message(m.chat.id, f"Contact support: @{sup}")
-
-    # PROOF HANDLING (any text from normal users is treated as proof and forwarded to admin)
-    if uid != ADMIN_ID:
-        # save proof and forward to admin
-        append_pending_proof(uid, text)
-        # forward the proof to admin with user id
-        try:
-            bot.send_message(ADMIN_ID, f"New proof from user {uid}:\n\n{text}")
-            bot.send_message(uid, L.get("proof_received_user", "Proof received. Waiting for admin review."))
-        except Exception as e:
-            logging.exception("forward proof error: %s", e)
+    # ---------- الإحالة ----------
+    if txt == L["btn_ref"]:
+        ref_link = f"https://t.me/{bot.get_me().username}?start={uid}"
+        bot.send_message(m.chat.id, L["ref_msg"].format(link=ref_link))
         return
 
-    # If ADMIN_ID sends messages (admin), ignore here (admin uses commands /accept /reject /paid)
-    return
-
-def receive_wallet(m):
-    uid = m.from_user.id
-    wallet = (m.text or "").strip()
-    ensure_user(uid)
-    bal = users_db.get(str(uid), {}).get("balance", 0.0)
-    # send to admin
-    try:
-        bot.send_message(ADMIN_ID, f"Withdrawal request:\nUser: {uid}\nBalance: {bal}$\nWallet: {wallet}")
-        bot.send_message(uid, LANG.get(get_lang(m.from_user), LANG["en"]).get("withdraw_sent", "Withdrawal request sent to admin."))
-    except Exception as e:
-        logging.exception("withdraw request error: %s", e)
-
-# ---------------- Admin commands ----------------
-@bot.callback_query_handler(func=lambda call: call.data.startswith("accept_") or call.data.startswith("reject_"))
-def admin_review(call):
-    if call.from_user.id != ADMIN_ID:
+    # ---------- الدعم ----------
+    if txt == L["btn_support"]:
+        bot.send_message(m.chat.id, L["support_text"].format(admin=SUPPORT_USER))
         return
 
-    uid = call.data.split("_")[1]
+    # ---------- إرسال إثبات ----------
+    if "pending" in users[str(uid)]:
+        acc = users[str(uid)]["pending"]
+        proof = txt
 
-    if call.data.startswith("accept_"):
-        # قبول المهمة
-        add_balance(uid, 0.05)
-        handle_first_task_bonus(uid)
+        # إرسال للإدارة للقبول / الرفض
+        bot.send_message(
+            ADMIN_ID,
+            f"📥 مهمة جديدة بانتظار المراجعة:\n\n"
+            f"👤 المستخدم: {uid}\n"
+            f"الاسم: {acc['first']} {acc['last']}\n"
+            f"الإيميل: {acc['email']}\n"
+            f"الباسورد: {acc['password']}\n"
+            f"الرابط: {TASK_URL}\n\n"
+            f"الرسالة:\n{proof}\n\n"
+            f"/accept_{uid} — قبول\n"
+            f"/reject_{uid} — رفض"
+        )
 
-        bot.send_message(int(uid), "✔ تم قبول المهمة.\nتم إضافة +0.05$ إلى رصيدك.")
-        bot.answer_callback_query(call.id, "تم القبول")
-    
-    else:
-        # رفض المهمة
-        bot.send_message(int(uid), "❌ تم رفض المهمة.\nبرجاء تنفيذ المهمة مرة أخرى.")
-        bot.answer_callback_query(call.id, "تم الرفض")
+        bot.send_message(m.chat.id, "تم إرسال المهمة للمراجعة 👍")
+        del users[str(uid)]["pending"]
+        save_json(USERS_FILE, users)
 
-# ----------------- start -----------------
-if __name__ == "__main__":
-    logging.info("Bot starting...")
-    bot.infinity_polling(timeout=60, long_polling_timeout=60)
+# ------------ قبول أو رفض الإدارة --------------
+@bot.message_handler(commands=['accept'])
+def accept(m):
+    if m.from_user.id != ADMIN_ID: return
+    uid = m.text.replace("/accept_", "")
+    add_balance(uid, 0.05)
+    bot.send_message(uid, "✔ تم قبول المهمة وإضافة 0.05$ إلى رصيدك.")
+    bot.reply_to(m, "✔ تم القبول.")
+
+@bot.message_handler(commands=['reject'])
+def reject(m):
+    if m.from_user.id != ADMIN_ID: return
+    uid = m.text.replace("/reject_", "")
+    bot.send_message(uid, "❌ تم رفض المهمة.")
+    bot.reply_to(m, "❌ تم الرفض.")
+
+# ---------------- RUN ----------------
+bot.infinity_polling()
